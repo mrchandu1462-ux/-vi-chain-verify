@@ -1,0 +1,233 @@
+"""
+Adversarial test suite for the Verifiable Intent verifier.
+
+Every negative test here follows the same shape as an SVA negative-testing
+sequence: take a chain we know is otherwise valid, mutate exactly one thing,
+and assert the verifier's decision is never "allow". A single test that
+accidentally lets a broken chain through is worse than a missing test, so
+each mutation targets one specific check in verify.py.
+"""
+from __future__ import annotations
+
+import copy
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from vi_verify import crypto
+from vi_verify.chain import build_l1, build_l2, build_l3, build_valid_chain, L1Terms, L2Terms
+from vi_verify.crypto import generate_keypair
+from vi_verify.models import Chain, Credential, PaymentRequirements
+from vi_verify.replay_store import ReplayStore
+from vi_verify.verify import VerifyContext, verify_chain
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def keys():
+    return {
+        "trustline": generate_keypair(),
+        "owner": generate_keypair(),
+        "agent": generate_keypair(),
+        "foreign": generate_keypair(),  # an unrelated key, for substitution attacks
+    }
+
+
+@pytest.fixture()
+def payment():
+    return PaymentRequirements(
+        invoice_id="inv-0001",
+        chain_id="xrpl:mainnet",
+        asset="RLUSD",
+        amount="25.00",
+        payee="rTrustline...merchant",
+    )
+
+
+@pytest.fixture()
+def ctx(keys):
+    return VerifyContext(trustline_public_key=keys["trustline"].public_key, replay_store=ReplayStore())
+
+
+def _valid_chain(keys, payment):
+    return build_valid_chain(
+        keys["trustline"], keys["owner"], keys["agent"], payment,
+        spend_ceiling="1000.0", per_tx_max="50.0",
+    )
+
+
+def _resign(private_key, payload):
+    """Re-sign a (possibly mutated) payload so we're only testing ONE failure mode at a time."""
+    return crypto.sign_es256(private_key, payload)
+
+
+# ---------------------------------------------------------------------------
+# Baseline: a correctly-built chain must be allowed (or reviewed if near ceiling)
+# ---------------------------------------------------------------------------
+
+def test_valid_chain_is_allowed(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "allow", result.reasons
+
+
+def test_valid_chain_near_ceiling_is_reviewed(keys, ctx):
+    payment = PaymentRequirements("inv-review", "xrpl:mainnet", "RLUSD", "95.00", "rMerchant")
+    chain = build_valid_chain(
+        keys["trustline"], keys["owner"], keys["agent"], payment,
+        spend_ceiling="100.0", per_tx_max="100.0",
+    )
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "review", result.reasons
+
+
+# ---------------------------------------------------------------------------
+# Hash-binding tampering (L2 <- L1, L3 <- L2)
+# ---------------------------------------------------------------------------
+
+def test_tampered_l2_l1_hash_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["l1Hash"] = "0" * 64  # break the hash binding to L1
+    tampered_l2 = Credential(payload=l2_payload, signature=_resign(keys["owner"].private_key, l2_payload))
+    chain = Chain(l1=chain.l1, l2=tampered_l2, l3=chain.l3)
+    # l3 still binds to the ORIGINAL l2 hash, so this also breaks the l2->l3 link;
+    # either failure is acceptable, we just must never allow.
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+
+
+def test_tampered_l3_l2_hash_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = "f" * 64
+    tampered_l3 = Credential(payload=l3_payload, signature=_resign(keys["agent"].private_key, l3_payload))
+    chain = Chain(l1=chain.l1, l2=chain.l2, l3=tampered_l3)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("l2Hash" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Signature substitution -- someone else's valid signature on a real payload
+# ---------------------------------------------------------------------------
+
+def test_l2_signed_by_wrong_key_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    forged_l2 = Credential(payload=l2_payload, signature=_resign(keys["foreign"].private_key, l2_payload))
+    chain = Chain(l1=chain.l1, l2=forged_l2, l3=chain.l3)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("owner key" in r for r in result.reasons)
+
+
+def test_l3_signed_by_wrong_key_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    forged_l3 = Credential(payload=l3_payload, signature=_resign(keys["foreign"].private_key, l3_payload))
+    chain = Chain(l1=chain.l1, l2=chain.l2, l3=forged_l3)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("agent key" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Scope escalation -- L2 must never grant more than L1 allowed
+# ---------------------------------------------------------------------------
+
+def test_l2_asset_escalation_is_denied(keys, payment, ctx):
+    l1_terms = L1Terms(allowed_chains=["xrpl:mainnet"], allowed_assets=["RLUSD"], spend_ceiling="1000.0")
+    l1 = build_l1(keys["trustline"], keys["owner"], l1_terms)
+    l2_terms = L2Terms(allowed_chains=["xrpl:mainnet"], allowed_assets=["RLUSD", "XRP"], per_tx_max="50.0")
+    l2 = build_l2(keys["owner"], keys["agent"], l1, l2_terms)  # smuggles in XRP, which L1 never granted
+    l3 = build_l3(keys["agent"], l2, payment)
+    chain = Chain(l1=l1, l2=l2, l3=l3)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("escalation" in r for r in result.reasons)
+
+
+def test_l2_spend_escalation_is_denied(keys, payment, ctx):
+    l1_terms = L1Terms(allowed_chains=["xrpl:mainnet"], allowed_assets=["RLUSD"], spend_ceiling="100.0")
+    l1 = build_l1(keys["trustline"], keys["owner"], l1_terms)
+    l2_terms = L2Terms(allowed_chains=["xrpl:mainnet"], allowed_assets=["RLUSD"], per_tx_max="500.0")
+    l2 = build_l2(keys["owner"], keys["agent"], l1, l2_terms)  # per-tx max exceeds L1's ceiling
+    l3 = build_l3(keys["agent"], l2, payment)
+    chain = Chain(l1=l1, l2=l2, l3=l3)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("spendCeiling" in r for r in result.reasons)
+
+
+def test_payment_amount_over_per_tx_max_is_denied(keys, ctx):
+    payment = PaymentRequirements("inv-big", "xrpl:mainnet", "RLUSD", "999.00", "rMerchant")
+    chain = build_valid_chain(
+        keys["trustline"], keys["owner"], keys["agent"], payment,
+        spend_ceiling="1000.0", per_tx_max="50.0",
+    )
+    # payment amount (999) exceeds L2 per_tx_max (50) even though it's under the L1 ceiling
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("perTxMax" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Payment mismatch -- L3 must commit to exactly the payment being settled
+# ---------------------------------------------------------------------------
+
+def test_wrong_invoice_id_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    other_payment = PaymentRequirements("inv-DIFFERENT", payment.chain_id, payment.asset, payment.amount, payment.payee)
+    result = verify_chain(chain, other_payment, ctx)
+    assert result.decision == "deny", result.reasons
+
+
+def test_altered_payment_amount_after_signing_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    tampered_payment = PaymentRequirements(
+        payment.invoice_id, payment.chain_id, payment.asset, "1.00", payment.payee
+    )  # amount changed after L3 was signed -> requirementsHash mismatch
+    result = verify_chain(chain, tampered_payment, ctx)
+    assert result.decision == "deny", result.reasons
+    assert any("requirementsHash" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Expiry
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("layer", ["l1", "l2", "l3"])
+def test_expired_layer_is_denied(keys, payment, ctx, layer):
+    chain = _valid_chain(keys, payment)
+    cred = getattr(chain, layer)
+    payload = copy.deepcopy(cred.payload)
+    payload["exp"] = int(time.time()) - 10  # already expired
+    signer = {"l1": keys["trustline"], "l2": keys["owner"], "l3": keys["agent"]}[layer]
+    expired_cred = Credential(payload=payload, signature=_resign(signer.private_key, payload))
+    kwargs = {"l1": chain.l1, "l2": chain.l2, "l3": chain.l3}
+    kwargs[layer] = expired_cred
+    chain = Chain(**kwargs)
+    result = verify_chain(chain, payment, ctx)
+    assert result.decision == "deny", result.reasons
+
+
+# ---------------------------------------------------------------------------
+# Single-use / replay enforcement
+# ---------------------------------------------------------------------------
+
+def test_replayed_l3_jti_is_denied_on_second_use(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    first = verify_chain(chain, payment, ctx)
+    assert first.decision in ("allow", "review"), first.reasons
+
+    second = verify_chain(chain, payment, ctx)  # exact same chain, same jti, replayed
+    assert second.decision == "deny", second.reasons
+    assert any("replay" in r for r in second.reasons)
