@@ -91,10 +91,27 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         return VerificationResult(decision="deny", reasons=reasons)
 
     # --- L2 scope must not exceed what L1 actually granted (no privilege escalation) ---
-    l1_chains = set(chain.l1.payload.get("allowedChains", []))
-    l1_assets = set(chain.l1.payload.get("allowedAssets", []))
-    l2_chains = set(chain.l2.payload.get("allowedChains", []))
-    l2_assets = set(chain.l2.payload.get("allowedAssets", []))
+    l1_allowed_chains = chain.l1.payload.get("allowedChains")
+    l1_allowed_assets = chain.l1.payload.get("allowedAssets")
+    l2_allowed_chains = chain.l2.payload.get("allowedChains")
+    l2_allowed_assets = chain.l2.payload.get("allowedAssets")
+
+    if not isinstance(l1_allowed_chains, list):
+        reasons.append("L1: allowedChains must be a list")
+    if not isinstance(l1_allowed_assets, list):
+        reasons.append("L1: allowedAssets must be a list")
+    if not isinstance(l2_allowed_chains, list):
+        reasons.append("L2: allowedChains must be a list")
+    if not isinstance(l2_allowed_assets, list):
+        reasons.append("L2: allowedAssets must be a list")
+
+    if reasons:
+        return VerificationResult(decision="deny", reasons=reasons)
+
+    l1_chains = set(l1_allowed_chains)
+    l1_assets = set(l1_allowed_assets)
+    l2_chains = set(l2_allowed_chains)
+    l2_assets = set(l2_allowed_assets)
     if not l2_chains.issubset(l1_chains):
         reasons.append("L2: allowedChains is not a subset of L1's allowedChains (scope escalation)")
     if not l2_assets.issubset(l1_assets):

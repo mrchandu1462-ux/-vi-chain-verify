@@ -350,3 +350,119 @@ def test_missing_or_empty_l3_jti_is_denied(keys, payment, ctx, jti):
     result = verify_chain(chain, payment, ctx)
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Schema/type confusion
+# ---------------------------------------------------------------------------
+
+def test_allowed_chains_string_is_denied_not_iterated_as_characters(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedChains"] = "xrpl:mainnet"
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    mutated = Chain(l1=chain.l1, l2=l2, l3=l3)
+
+    result = verify_chain(mutated, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_allowed_assets_string_is_denied_not_iterated_as_characters(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedAssets"] = "RLUSD"
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    mutated = Chain(l1=chain.l1, l2=l2, l3=l3)
+
+    result = verify_chain(mutated, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["allowedChains", "allowedAssets"])
+def test_none_scope_field_is_denied(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload[field] = None
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    mutated = Chain(l1=chain.l1, l2=l2, l3=l3)
+
+    result = verify_chain(mutated, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["spendCeiling", "perTxMax"])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_authorization_limit_is_denied(keys, payment, ctx, field, value):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    if field == "perTxMax":
+        l2_payload[field] = value
+    else:
+        l1_payload = copy.deepcopy(chain.l1.payload)
+        l1_payload[field] = value
+        l1 = Credential(
+            payload=l1_payload,
+            signature=_resign(keys["trustline"].private_key, l1_payload),
+        )
+    if field == "perTxMax":
+        l1 = chain.l1
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    mutated = Chain(l1=l1, l2=l2, l3=l3)
+
+    result = verify_chain(mutated, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
