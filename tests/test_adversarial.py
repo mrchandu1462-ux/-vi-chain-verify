@@ -1612,3 +1612,226 @@ def test_unhashable_authorization_list_elements_fail_closed(
     )
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Authorization narrowing semantics
+# ---------------------------------------------------------------------------
+
+def test_l2_cannot_expand_allowed_chains(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedChains"] = ["xrpl:mainnet", "xrpl:testnet"]
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l2_cannot_expand_allowed_assets(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedAssets"] = ["RLUSD", "USDC"]
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l2_can_narrow_allowed_chains(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedChains"] = ["xrpl:mainnet"]
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision in ("allow", "review"), result.reasons
+
+
+def test_l2_can_narrow_allowed_assets(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["allowedAssets"] = ["RLUSD"]
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision in ("allow", "review"), result.reasons
+
+# ---------------------------------------------------------------------------
+# Payment must remain inside the effective L2 authorization
+# ---------------------------------------------------------------------------
+
+def test_payment_chain_outside_l2_delegation_is_denied(keys, ctx):
+    payment = PaymentRequirements(
+        "inv-chain-boundary",
+        "xrpl:testnet",
+        "RLUSD",
+        "25.00",
+        "rMerchant",
+    )
+
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(
+            allowed_chains=["xrpl:mainnet", "xrpl:testnet"],
+            allowed_assets=["RLUSD"],
+            spend_ceiling="1000.0",
+        ),
+    )
+
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(
+            allowed_chains=["xrpl:mainnet"],
+            allowed_assets=["RLUSD"],
+            per_tx_max="50.0",
+        ),
+    )
+
+    l3 = build_l3(keys["agent"], l2, payment)
+
+    result = verify_chain(
+        Chain(l1=l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+    assert any("chain" in r.lower() for r in result.reasons)
+
+
+def test_payment_asset_outside_l2_delegation_is_denied(keys, ctx):
+    payment = PaymentRequirements(
+        "inv-asset-boundary",
+        "xrpl:mainnet",
+        "USDC",
+        "25.00",
+        "rMerchant",
+    )
+
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(
+            allowed_chains=["xrpl:mainnet"],
+            allowed_assets=["RLUSD", "USDC"],
+            spend_ceiling="1000.0",
+        ),
+    )
+
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(
+            allowed_chains=["xrpl:mainnet"],
+            allowed_assets=["RLUSD"],
+            per_tx_max="50.0",
+        ),
+    )
+
+    l3 = build_l3(keys["agent"], l2, payment)
+
+    result = verify_chain(
+        Chain(l1=l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+    assert any("asset" in r.lower() for r in result.reasons)
+
+
+def test_payment_tampering_is_caught_by_requirements_hash(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    tampered_payment = PaymentRequirements(
+        payment.invoice_id,
+        payment.chain_id,
+        payment.asset,
+        "26.00",
+        payment.payee,
+    )
+
+    result = verify_chain(
+        chain,
+        tampered_payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+    assert any("requirementsHash" in r for r in result.reasons)
