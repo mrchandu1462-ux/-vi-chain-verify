@@ -231,3 +231,122 @@ def test_replayed_l3_jti_is_denied_on_second_use(keys, payment, ctx):
     second = verify_chain(chain, payment, ctx)  # exact same chain, same jti, replayed
     assert second.decision == "deny", second.reasons
     assert any("replay" in r for r in second.reasons)
+
+# ---------------------------------------------------------------------------
+# Boundary and malformed authorization values
+# ---------------------------------------------------------------------------
+
+def test_expiry_exactly_at_current_time_is_denied(keys, payment):
+    chain = _valid_chain(keys, payment)
+    now = int(time.time())
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["exp"] = now
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    chain = Chain(l1=chain.l1, l2=chain.l2, l3=l3)
+    ctx = VerifyContext(
+        trustline_public_key=keys["trustline"].public_key,
+        replay_store=ReplayStore(),
+        clock=now,
+    )
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+    assert any("expired" in r.lower() for r in result.reasons)
+
+
+def test_negative_payment_amount_is_denied(keys, ctx):
+    payment = PaymentRequirements(
+        "inv-negative",
+        "xrpl:mainnet",
+        "RLUSD",
+        "-1.00",
+        "rMerchant",
+    )
+
+    chain = build_valid_chain(
+        keys["trustline"],
+        keys["owner"],
+        keys["agent"],
+        payment,
+        spend_ceiling="1000.0",
+        per_tx_max="50.0",
+    )
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("amount", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_payment_amount_is_denied(keys, ctx, amount):
+    payment = PaymentRequirements(
+        "inv-nonfinite",
+        "xrpl:mainnet",
+        "RLUSD",
+        amount,
+        "rMerchant",
+    )
+
+    chain = build_valid_chain(
+        keys["trustline"],
+        keys["owner"],
+        keys["agent"],
+        payment,
+        spend_ceiling="1000.0",
+        per_tx_max="50.0",
+    )
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_negative_per_tx_max_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["perTxMax"] = "-1.00"
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    # L3 must bind to the mutated L2 so this test isolates perTxMax.
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    chain = Chain(l1=chain.l1, l2=l2, l3=l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("jti", ["", None])
+def test_missing_or_empty_l3_jti_is_denied(keys, payment, ctx, jti):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["jti"] = jti
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    chain = Chain(l1=chain.l1, l2=chain.l2, l3=l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons

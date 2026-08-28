@@ -45,9 +45,14 @@ class VerifyContext:
 
 def _decimal(value: str) -> Decimal | None:
     try:
-        return Decimal(value)
-    except (InvalidOperation, TypeError):
+        result = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
         return None
+
+    if not result.is_finite():
+        return None
+
+    return result
 
 
 def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext) -> VerificationResult:
@@ -59,7 +64,7 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
     if not crypto.verify_es256(ctx.trustline_public_key, chain.l1.payload, chain.l1.signature):
         reasons.append("L1: signature does not verify against Trustline issuer key")
     l1_exp = chain.l1.payload.get("exp")
-    if not isinstance(l1_exp, int) or l1_exp < ctx.now():
+    if not isinstance(l1_exp, int) or l1_exp <= ctx.now():
         reasons.append("L1: expired")
 
     if reasons:
@@ -79,7 +84,7 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
     if chain.l2.payload.get("l1Hash") != crypto.hash_payload(chain.l1.payload):
         reasons.append("L2: l1Hash does not match the actual L1 credential (hash-binding broken)")
     l2_exp = chain.l2.payload.get("exp")
-    if not isinstance(l2_exp, int) or l2_exp < ctx.now():
+    if not isinstance(l2_exp, int) or l2_exp <= ctx.now():
         reasons.append("L2: expired")
 
     if reasons:
@@ -121,7 +126,7 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
     if chain.l3.payload.get("l2Hash") != crypto.hash_payload(chain.l2.payload):
         reasons.append("L3: l2Hash does not match the actual L2 credential (hash-binding broken)")
     l3_exp = chain.l3.payload.get("exp")
-    if not isinstance(l3_exp, int) or l3_exp < ctx.now():
+    if not isinstance(l3_exp, int) or l3_exp <= ctx.now():
         reasons.append("L3: expired")
 
     if reasons:
@@ -140,7 +145,9 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         reasons.append("Payment: asset not covered by L2 delegation")
     amount = _decimal(payment.amount)
     if amount is None:
-        reasons.append("Payment: amount is not a valid decimal")
+        reasons.append("Payment: amount is not a valid finite decimal")
+    elif amount < 0:
+        reasons.append("Payment: amount cannot be negative")
     elif per_tx_max is not None and amount > per_tx_max:
         reasons.append("Payment: amount exceeds L2 perTxMax")
 
