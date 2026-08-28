@@ -173,8 +173,18 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
 
     # --- single-use enforcement: an L3 jti must never be seen twice ---
     jti = chain.l3.payload.get("jti")
-    if not jti or ctx.replay_store.seen(jti):
-        return VerificationResult(decision="deny", reasons=["L3: jti already used (replay)"])
+    if not isinstance(jti, str) or not jti:
+        return VerificationResult(
+            decision="deny",
+            reasons=["L3: jti must be a non-empty string"],
+        )
+
+    if ctx.replay_store.seen(jti):
+        return VerificationResult(
+            decision="deny",
+            reasons=["L3: jti already used (replay)"],
+        )
+
     ctx.replay_store.record(jti)
 
     # --- soft risk signal: spend close to the L1 ceiling gets a second look ---

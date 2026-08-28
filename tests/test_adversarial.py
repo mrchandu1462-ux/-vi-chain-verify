@@ -623,3 +623,92 @@ def test_zero_l2_per_tx_max_is_denied(keys, payment, ctx):
     )
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Credential field type confusion
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("jti", [123, [], {}, False])
+def test_non_string_l3_jti_is_denied(keys, payment, ctx, jti):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["jti"] = jti
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    chain = Chain(l1=chain.l1, l2=chain.l2, l3=l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["l1Hash", "l2Hash"])
+def test_non_string_hash_binding_is_denied(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    if field == "l1Hash":
+        l2_payload = copy.deepcopy(chain.l2.payload)
+        l2_payload[field] = None
+
+        l2 = Credential(
+            payload=l2_payload,
+            signature=_resign(keys["owner"].private_key, l2_payload),
+        )
+
+        chain = Chain(l1=chain.l1, l2=l2, l3=chain.l3)
+
+    else:
+        l3_payload = copy.deepcopy(chain.l3.payload)
+        l3_payload[field] = None
+
+        l3 = Credential(
+            payload=l3_payload,
+            signature=_resign(keys["agent"].private_key, l3_payload),
+        )
+
+        chain = Chain(l1=chain.l1, l2=chain.l2, l3=l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_empty_owner_public_key_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["ownerPubKey"] = ""
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    chain = Chain(l1=l1, l2=chain.l2, l3=chain.l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_empty_agent_public_key_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["agentPubKey"] = ""
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    chain = Chain(l1=chain.l1, l2=l2, l3=chain.l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
