@@ -25,18 +25,23 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
 from cryptography.exceptions import InvalidSignature
 
 
+def public_key_thumbprint(public_key: ec.EllipticCurvePublicKey) -> str:
+    """Return a short, stable identifier for a public key."""
+    raw = public_key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint,
+    )
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class KeyPair:
     private_key: ec.EllipticCurvePrivateKey
     public_key: ec.EllipticCurvePublicKey
 
     def public_jwk_thumbprint(self) -> str:
-        """A short, stable identifier for the public key (stand-in for a JWK kid)."""
-        raw = self.public_key.public_bytes(
-            encoding=serialization.Encoding.X962,
-            format=serialization.PublicFormat.UncompressedPoint,
-        )
-        return hashlib.sha256(raw).hexdigest()[:16]
+        """A short, stable identifier for the public key."""
+        return public_key_thumbprint(self.public_key)
 
 
 def generate_keypair() -> KeyPair:

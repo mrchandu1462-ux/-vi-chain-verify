@@ -1128,3 +1128,205 @@ def test_l3_cannot_be_issued_before_l2(keys, payment, ctx):
     )
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Required scalar field schema
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("field", ["sub", "ownerPubKey"])
+def test_l1_required_identity_fields_must_be_non_empty_strings(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload[field] = None
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["sub", "ownerPubKey"])
+def test_l1_required_identity_fields_wrong_type_are_denied(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload[field] = 123
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["iss", "agentPubKey"])
+def test_l2_required_identity_fields_must_be_non_empty_strings(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload[field] = None
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["iss", "agentPubKey"])
+def test_l2_required_identity_fields_wrong_type_are_denied(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload[field] = []
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["invoiceId", "requirementsHash"])
+def test_l3_required_payment_fields_must_be_non_empty_strings(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload[field] = None
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("field", ["invoiceId", "requirementsHash"])
+def test_l3_required_payment_fields_wrong_type_are_denied(keys, payment, ctx, field):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload[field] = {}
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Identity binding
+# ---------------------------------------------------------------------------
+
+def test_l2_issuer_must_match_l1_subject(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["iss"] = "different-owner"
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+    assert any("iss" in r.lower() for r in result.reasons)
+
+
+def test_l1_subject_must_match_owner_public_key(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["sub"] = "not-the-owner-thumbprint"
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+    assert any("sub" in r.lower() for r in result.reasons)
+
+
+def test_l1_subject_cannot_be_bound_to_different_owner_key(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["ownerPubKey"] = crypto.public_key_to_pem(keys["foreign"].public_key)
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons

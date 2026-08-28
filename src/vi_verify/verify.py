@@ -82,9 +82,17 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
     except Exception:
         return VerificationResult(decision="deny", reasons=["L1: unparseable ownerPubKey"])
 
+    if chain.l1.payload.get("sub") != crypto.public_key_thumbprint(owner_pubkey):
+        return VerificationResult(
+            decision="deny",
+            reasons=["L1: sub does not match the owner public key thumbprint"],
+        )
+
     # --- L2: owner delegation, must be signed by the *L1-bound* owner key ---
     if chain.l2.payload.get("type") != "vi-l2":
         reasons.append("L2: wrong credential type")
+    if chain.l2.payload.get("iss") != chain.l1.payload.get("sub"):
+        reasons.append("L2: iss does not match L1 sub")
     if not crypto.verify_es256(owner_pubkey, chain.l2.payload, chain.l2.signature):
         reasons.append("L2: signature does not verify against the owner key bound in L1")
     if chain.l2.payload.get("l1Hash") != crypto.hash_payload(chain.l1.payload):
