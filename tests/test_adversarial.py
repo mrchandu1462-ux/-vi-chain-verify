@@ -1330,3 +1330,150 @@ def test_l1_subject_cannot_be_bound_to_different_owner_key(keys, payment, ctx):
     )
 
     assert result.decision == "deny", result.reasons
+# ---------------------------------------------------------------------------
+# Authorization limit semantic boundaries
+# ---------------------------------------------------------------------------
+
+def test_negative_spend_ceiling_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["spendCeiling"] = "-1.00"
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    # Rebind L2 to the modified L1 so this test isolates spendCeiling.
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["l1Hash"] = crypto.hash_payload(l1_payload)
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    # Rebind L3 to the modified L2.
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_zero_spend_ceiling_is_denied_for_positive_payment(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["spendCeiling"] = "0"
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["l1Hash"] = crypto.hash_payload(l1_payload)
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_per_tx_max_equal_to_spend_ceiling_is_allowed(keys, payment, ctx):
+    chain = build_valid_chain(
+        keys["trustline"],
+        keys["owner"],
+        keys["agent"],
+        payment,
+        spend_ceiling="25.00",
+        per_tx_max="25.00",
+    )
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision in ("allow", "review"), result.reasons
+
+
+@pytest.mark.parametrize("field", ["spendCeiling", "perTxMax"])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_authorization_limit_is_denied(keys, payment, ctx, field, value):
+    chain = _valid_chain(keys, payment)
+
+    if field == "spendCeiling":
+        l1_payload = copy.deepcopy(chain.l1.payload)
+        l1_payload[field] = value
+
+        l1 = Credential(
+            payload=l1_payload,
+            signature=_resign(keys["trustline"].private_key, l1_payload),
+        )
+
+        l2_payload = copy.deepcopy(chain.l2.payload)
+        l2_payload["l1Hash"] = crypto.hash_payload(l1_payload)
+
+        l2 = Credential(
+            payload=l2_payload,
+            signature=_resign(keys["owner"].private_key, l2_payload),
+        )
+
+        l3_payload = copy.deepcopy(chain.l3.payload)
+        l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+        l3 = Credential(
+            payload=l3_payload,
+            signature=_resign(keys["agent"].private_key, l3_payload),
+        )
+
+        chain = Chain(l1=l1, l2=l2, l3=l3)
+
+    else:
+        l2_payload = copy.deepcopy(chain.l2.payload)
+        l2_payload[field] = value
+
+        l2 = Credential(
+            payload=l2_payload,
+            signature=_resign(keys["owner"].private_key, l2_payload),
+        )
+
+        l3_payload = copy.deepcopy(chain.l3.payload)
+        l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+        l3 = Credential(
+            payload=l3_payload,
+            signature=_resign(keys["agent"].private_key, l3_payload),
+        )
+
+        chain = Chain(l1=chain.l1, l2=l2, l3=l3)
+
+    result = verify_chain(chain, payment, ctx)
+
+    assert result.decision == "deny", result.reasons
