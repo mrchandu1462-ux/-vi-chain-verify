@@ -63,9 +63,15 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         reasons.append("L1: wrong credential type")
     if not crypto.verify_es256(ctx.trustline_public_key, chain.l1.payload, chain.l1.signature):
         reasons.append("L1: signature does not verify against Trustline issuer key")
+    l1_iat = chain.l1.payload.get("iat")
     l1_exp = chain.l1.payload.get("exp")
+
+    if not isinstance(l1_iat, int):
+        reasons.append("L1: iat must be an integer")
     if not isinstance(l1_exp, int) or l1_exp <= ctx.now():
         reasons.append("L1: expired")
+    if isinstance(l1_iat, int) and isinstance(l1_exp, int) and l1_iat > l1_exp:
+        reasons.append("L1: iat must not be after exp")
 
     if reasons:
         return VerificationResult(decision="deny", reasons=reasons)
@@ -83,9 +89,17 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         reasons.append("L2: signature does not verify against the owner key bound in L1")
     if chain.l2.payload.get("l1Hash") != crypto.hash_payload(chain.l1.payload):
         reasons.append("L2: l1Hash does not match the actual L1 credential (hash-binding broken)")
+    l2_iat = chain.l2.payload.get("iat")
     l2_exp = chain.l2.payload.get("exp")
+
+    if not isinstance(l2_iat, int):
+        reasons.append("L2: iat must be an integer")
     if not isinstance(l2_exp, int) or l2_exp <= ctx.now():
         reasons.append("L2: expired")
+    if isinstance(l2_iat, int) and isinstance(l2_exp, int) and l2_iat > l2_exp:
+        reasons.append("L2: iat must not be after exp")
+    if isinstance(l1_iat, int) and isinstance(l2_iat, int) and l2_iat < l1_iat:
+        reasons.append("L2: iat cannot be before L1 iat")
 
     if reasons:
         return VerificationResult(decision="deny", reasons=reasons)
@@ -142,9 +156,17 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         reasons.append("L3: signature does not verify against the agent key bound in L2")
     if chain.l3.payload.get("l2Hash") != crypto.hash_payload(chain.l2.payload):
         reasons.append("L3: l2Hash does not match the actual L2 credential (hash-binding broken)")
+    l3_iat = chain.l3.payload.get("iat")
     l3_exp = chain.l3.payload.get("exp")
+
+    if not isinstance(l3_iat, int):
+        reasons.append("L3: iat must be an integer")
     if not isinstance(l3_exp, int) or l3_exp <= ctx.now():
         reasons.append("L3: expired")
+    if isinstance(l3_iat, int) and isinstance(l3_exp, int) and l3_iat > l3_exp:
+        reasons.append("L3: iat must not be after exp")
+    if isinstance(l2_iat, int) and isinstance(l3_iat, int) and l3_iat < l2_iat:
+        reasons.append("L3: iat cannot be before L2 iat")
 
     if reasons:
         return VerificationResult(decision="deny", reasons=reasons)

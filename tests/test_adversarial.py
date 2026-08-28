@@ -998,3 +998,133 @@ def test_valid_signature_still_verifies_after_boundary_tests(keys, payment, ctx)
         chain.l1.payload,
         chain.l1.signature,
     )
+# ---------------------------------------------------------------------------
+# Temporal consistency / issuance-order attacks
+# ---------------------------------------------------------------------------
+
+def test_l1_iat_after_exp_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["iat"] = l1_payload["exp"] + 1
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l2_iat_after_exp_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["iat"] = l2_payload["exp"] + 1
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l3_iat_after_exp_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["iat"] = l3_payload["exp"] + 1
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_non_integer_iat_is_denied(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["iat"] = "not-a-timestamp"
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l2_cannot_be_issued_before_l1(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["iat"] = chain.l1.payload["iat"] - 1
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = crypto.hash_payload(l2_payload)
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_l3_cannot_be_issued_before_l2(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["iat"] = chain.l2.payload["iat"] - 1
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
