@@ -1477,3 +1477,67 @@ def test_non_finite_authorization_limit_is_denied(keys, payment, ctx, field, val
     result = verify_chain(chain, payment, ctx)
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Replay lifecycle: failed verification must not consume a valid JTI
+# ---------------------------------------------------------------------------
+
+def test_denied_chain_does_not_consume_l3_jti(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["invoiceId"] = "wrong-invoice"
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    denied_chain = Chain(
+        l1=chain.l1,
+        l2=chain.l2,
+        l3=l3,
+    )
+
+    first = verify_chain(denied_chain, payment, ctx)
+    assert first.decision == "deny", first.reasons
+
+    second = verify_chain(chain, payment, ctx)
+    assert second.decision in ("allow", "review"), second.reasons
+
+
+def test_review_consumes_l3_jti(keys, ctx):
+    payment = PaymentRequirements(
+        "inv-review-lifecycle",
+        "xrpl:mainnet",
+        "RLUSD",
+        "95.00",
+        "rMerchant",
+    )
+
+    chain = build_valid_chain(
+        keys["trustline"],
+        keys["owner"],
+        keys["agent"],
+        payment,
+        spend_ceiling="100.0",
+        per_tx_max="100.0",
+    )
+
+    first = verify_chain(chain, payment, ctx)
+    assert first.decision == "review", first.reasons
+
+    second = verify_chain(chain, payment, ctx)
+    assert second.decision == "deny", second.reasons
+    assert any("replay" in r.lower() for r in second.reasons)
+
+
+def test_allow_consumes_l3_jti(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    first = verify_chain(chain, payment, ctx)
+    assert first.decision == "allow", first.reasons
+
+    second = verify_chain(chain, payment, ctx)
+    assert second.decision == "deny", second.reasons
+    assert any("replay" in r.lower() for r in second.reasons)
