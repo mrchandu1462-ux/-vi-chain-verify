@@ -130,6 +130,18 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
     if reasons:
         return VerificationResult(decision="deny", reasons=reasons)
 
+    for name, values in (
+        ("L1: allowedChains", l1_allowed_chains),
+        ("L1: allowedAssets", l1_allowed_assets),
+        ("L2: allowedChains", l2_allowed_chains),
+        ("L2: allowedAssets", l2_allowed_assets),
+    ):
+        if any(not isinstance(value, str) or not value for value in values):
+            reasons.append(f"{name} must contain only non-empty strings")
+
+    if reasons:
+        return VerificationResult(decision="deny", reasons=reasons)
+
     l1_chains = set(l1_allowed_chains)
     l1_assets = set(l1_allowed_assets)
     l2_chains = set(l2_allowed_chains)

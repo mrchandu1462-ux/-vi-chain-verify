@@ -1541,3 +1541,74 @@ def test_allow_consumes_l3_jti(keys, payment, ctx):
     second = verify_chain(chain, payment, ctx)
     assert second.decision == "deny", second.reasons
     assert any("replay" in r.lower() for r in second.reasons)
+
+# ---------------------------------------------------------------------------
+# Authorization list element type confusion
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("allowedChains", [None]),
+        ("allowedChains", [123]),
+        ("allowedChains", [{}]),
+        ("allowedChains", [[]]),
+        ("allowedChains", [""]),
+        ("allowedAssets", [None]),
+        ("allowedAssets", [123]),
+        ("allowedAssets", [{}]),
+        ("allowedAssets", [[]]),
+        ("allowedAssets", [""]),
+    ],
+)
+def test_malformed_authorization_list_elements_are_denied(
+    keys, payment, ctx, field, bad_value
+):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload[field] = bad_value
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("allowedChains", [["xrpl:mainnet"]]),
+        ("allowedChains", [{"chain": "xrpl:mainnet"}]),
+        ("allowedAssets", [["RLUSD"]]),
+        ("allowedAssets", [{"asset": "RLUSD"}]),
+    ],
+)
+def test_unhashable_authorization_list_elements_fail_closed(
+    keys, payment, ctx, field, bad_value
+):
+    chain = _valid_chain(keys, payment)
+
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload[field] = bad_value
+
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
