@@ -712,3 +712,289 @@ def test_empty_agent_public_key_is_denied(keys, payment, ctx):
     result = verify_chain(chain, payment, ctx)
 
     assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Hash-binding type and format confusion
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad_hash", [None, 123, [], {}, False, ""])
+def test_malformed_l1_hash_binding_is_denied(keys, payment, ctx, bad_hash):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["l1Hash"] = bad_hash
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize("bad_hash", [None, 123, [], {}, False, ""])
+def test_malformed_l2_hash_binding_is_denied(keys, payment, ctx, bad_hash):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = bad_hash
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize(
+    "bad_hash",
+    [
+        "0" * 63,
+        "0" * 65,
+        "g" * 64,
+        "A" * 64,
+        "sha256:" + "0" * 64,
+    ],
+)
+def test_malformed_l1_hash_format_is_denied(keys, payment, ctx, bad_hash):
+    chain = _valid_chain(keys, payment)
+
+    l2_payload = copy.deepcopy(chain.l2.payload)
+    l2_payload["l1Hash"] = bad_hash
+
+    l2 = Credential(
+        payload=l2_payload,
+        signature=_resign(keys["owner"].private_key, l2_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize(
+    "bad_hash",
+    [
+        "0" * 63,
+        "0" * 65,
+        "g" * 64,
+        "A" * 64,
+        "sha256:" + "0" * 64,
+    ],
+)
+def test_malformed_l2_hash_format_is_denied(keys, payment, ctx, bad_hash):
+    chain = _valid_chain(keys, payment)
+
+    l3_payload = copy.deepcopy(chain.l3.payload)
+    l3_payload["l2Hash"] = bad_hash
+
+    l3 = Credential(
+        payload=l3_payload,
+        signature=_resign(keys["agent"].private_key, l3_payload),
+    )
+
+    result = verify_chain(
+        Chain(l1=chain.l1, l2=chain.l2, l3=l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+# ---------------------------------------------------------------------------
+# Malformed external chain structure
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_chain",
+    [
+        {},
+        {"verifiableIntentChain": {}},
+        {"verifiableIntentChain": None},
+        {"verifiableIntentChain": []},
+        {"verifiableIntentChain": {"l1Credential": {}}},
+        {"verifiableIntentChain": {"l1Credential": None}},
+        {"verifiableIntentChain": {"l1Credential": []}},
+    ],
+)
+def test_malformed_chain_structure_does_not_verify(bad_chain):
+    with pytest.raises((KeyError, TypeError, AttributeError)):
+        Chain.from_dict(bad_chain)
+
+
+@pytest.mark.parametrize(
+    "bad_credential",
+    [
+        {},
+        None,
+        [],
+        {"payload": {}},
+        {"signature": "abc"},
+        {"payload": [], "signature": "abc"},
+        {"payload": {}, "signature": None},
+    ],
+)
+def test_malformed_credential_structure_rejected(bad_credential):
+    with pytest.raises((KeyError, TypeError, AttributeError)):
+        Credential.from_dict(bad_credential)
+
+# ---------------------------------------------------------------------------
+# Malformed whole-chain structure
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_chain",
+    [
+        None,
+        [],
+        "chain",
+        {"verifiableIntentChain": None},
+        {"verifiableIntentChain": []},
+        {"verifiableIntentChain": "chain"},
+        {"verifiableIntentChain": {}},
+    ],
+)
+def test_malformed_chain_container_is_rejected(bad_chain):
+    with pytest.raises((TypeError, KeyError)):
+        Chain.from_dict(bad_chain)
+
+
+@pytest.mark.parametrize("field", ["l1Credential", "l2Delegation", "l3FinalAction"])
+def test_missing_chain_credential_is_rejected(field):
+    valid = {
+        "l1Credential": {
+            "payload": {},
+            "signature": "abc",
+        },
+        "l2Delegation": {
+            "payload": {},
+            "signature": "abc",
+        },
+        "l3FinalAction": {
+            "payload": {},
+            "signature": "abc",
+        },
+    }
+
+    del valid[field]
+
+    with pytest.raises(KeyError):
+        Chain.from_dict({"verifiableIntentChain": valid})
+
+
+@pytest.mark.parametrize("field", ["l1Credential", "l2Delegation", "l3FinalAction"])
+def test_malformed_chain_credential_is_rejected(field):
+    valid = {
+        "l1Credential": {
+            "payload": {},
+            "signature": "abc",
+        },
+        "l2Delegation": {
+            "payload": {},
+            "signature": "abc",
+        },
+        "l3FinalAction": {
+            "payload": {},
+            "signature": "abc",
+        },
+    }
+
+    valid[field] = None
+
+    with pytest.raises(TypeError):
+        Chain.from_dict({"verifiableIntentChain": valid})
+
+
+def test_valid_chain_round_trips_through_dict(keys, payment):
+    original = _valid_chain(keys, payment)
+
+    restored = Chain.from_dict(original.to_dict())
+
+    assert restored.to_dict() == original.to_dict()
+
+# ---------------------------------------------------------------------------
+# Signature decoding / representation boundary
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_signature",
+    [
+        None,
+        123,
+        [],
+        {},
+        False,
+        "",
+        "not-base64!!!",
+        "%%%%",
+        "abc",
+    ],
+)
+def test_malformed_l1_signature_is_denied_without_crashing(keys, payment, ctx, bad_signature):
+    chain = _valid_chain(keys, payment)
+
+    l1 = Credential(
+        payload=chain.l1.payload,
+        signature=bad_signature,
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+@pytest.mark.parametrize(
+    "bad_signature",
+    [
+        "A" * 10,
+        "A" * 100,
+        "0" * 86,
+        "!" * 86,
+    ],
+)
+def test_malformed_signature_lengths_are_denied(keys, payment, ctx, bad_signature):
+    chain = _valid_chain(keys, payment)
+
+    l1 = Credential(
+        payload=chain.l1.payload,
+        signature=bad_signature,
+    )
+
+    result = verify_chain(
+        Chain(l1=l1, l2=chain.l2, l3=chain.l3),
+        payment,
+        ctx,
+    )
+
+    assert result.decision == "deny", result.reasons
+
+
+def test_valid_signature_still_verifies_after_boundary_tests(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    assert crypto.verify_es256(
+        keys["trustline"].public_key,
+        chain.l1.payload,
+        chain.l1.signature,
+    )

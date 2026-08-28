@@ -59,7 +59,19 @@ class Credential:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Credential":
-        return Credential(payload=data["payload"], signature=data["signature"])
+        if not isinstance(data, dict):
+            raise TypeError("credential must be an object")
+
+        payload = data.get("payload")
+        signature = data.get("signature")
+
+        if not isinstance(payload, dict):
+            raise TypeError("credential payload must be an object")
+
+        if not isinstance(signature, str) or not signature:
+            raise TypeError("credential signature must be a non-empty string")
+
+        return Credential(payload=payload, signature=signature)
 
 
 @dataclass
@@ -81,7 +93,19 @@ class Chain:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Chain":
+        if not isinstance(data, dict):
+            raise TypeError("chain must be an object")
+
         chain = data.get("verifiableIntentChain", data)
+
+        if not isinstance(chain, dict):
+            raise TypeError("verifiableIntentChain must be an object")
+
+        required = ("l1Credential", "l2Delegation", "l3FinalAction")
+        missing = [name for name in required if name not in chain]
+        if missing:
+            raise KeyError(f"missing chain fields: {', '.join(missing)}")
+
         return Chain(
             l1=Credential.from_dict(chain["l1Credential"]),
             l2=Credential.from_dict(chain["l2Delegation"]),

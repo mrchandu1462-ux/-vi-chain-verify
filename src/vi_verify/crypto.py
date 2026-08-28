@@ -49,6 +49,9 @@ def b64url(data: bytes) -> str:
 
 
 def b64url_decode(data: str) -> bytes:
+    if not isinstance(data, str):
+        raise TypeError("base64url input must be a string")
+
     padding = "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(data + padding)
 
@@ -87,7 +90,7 @@ def verify_es256(public_key: ec.EllipticCurvePublicKey, payload: dict, signature
         message = canonical_json(payload)
         public_key.verify(der_sig, message, ec.ECDSA(hashes.SHA256()))
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, TypeError, ValueError):
         return False
 
 
