@@ -192,6 +192,18 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
         return VerificationResult(decision="deny", reasons=reasons)
 
     # --- L3 must commit to exactly this payment ---
+    for name, value in (
+        ("invoiceId", payment.invoice_id),
+        ("chainId", payment.chain_id),
+        ("asset", payment.asset),
+        ("payee", payment.payee),
+    ):
+        if not isinstance(value, str) or not value:
+            reasons.append(f"Payment: {name} must be a non-empty string")
+
+    if reasons:
+        return VerificationResult(decision="deny", reasons=reasons)
+
     if chain.l3.payload.get("invoiceId") != payment.invoice_id:
         reasons.append("L3: invoiceId does not match the payment being settled")
     if chain.l3.payload.get("requirementsHash") != crypto.hash_payload(payment.to_dict()):

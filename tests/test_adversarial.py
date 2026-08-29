@@ -183,6 +183,77 @@ def test_payment_amount_over_per_tx_max_is_denied(keys, ctx):
 
 
 # ---------------------------------------------------------------------------
+# Payment field schema
+# ---------------------------------------------------------------------------
+
+def _chain_for_payment(keys, payment):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="1000.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="50.00"),
+    )
+    return Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, payment))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("chain_id", []),
+        ("asset", []),
+        ("invoice_id", 123),
+        ("payee", {}),
+    ],
+)
+def test_non_string_payment_fields_fail_closed(keys, ctx, field, value):
+    values = {
+        "invoice_id": "inv-payment-schema",
+        "chain_id": "xrpl:mainnet",
+        "asset": "RLUSD",
+        "amount": "25.00",
+        "payee": "rMerchant",
+    }
+    values[field] = value
+    malformed_payment = PaymentRequirements(**values)
+    chain = _chain_for_payment(keys, malformed_payment)
+
+    result = verify_chain(chain, malformed_payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+    assert any("non-empty string" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize("field", ["invoice_id", "chain_id", "asset", "payee"])
+def test_empty_payment_fields_are_denied(keys, ctx, field):
+    values = {
+        "invoice_id": "inv-payment-schema",
+        "chain_id": "xrpl:mainnet",
+        "asset": "RLUSD",
+        "amount": "25.00",
+        "payee": "rMerchant",
+    }
+    values[field] = ""
+    malformed_payment = PaymentRequirements(**values)
+    chain = _chain_for_payment(keys, malformed_payment)
+
+    result = verify_chain(chain, malformed_payment, ctx)
+
+    assert result.decision == "deny", result.reasons
+    assert any("non-empty string" in reason for reason in result.reasons)
+
+
+def test_valid_payment_fields_still_verify(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+
+    assert verify_chain(chain, payment, ctx).decision == "allow"
+
+
+# ---------------------------------------------------------------------------
 # L1 cumulative spend ceiling
 # ---------------------------------------------------------------------------
 
