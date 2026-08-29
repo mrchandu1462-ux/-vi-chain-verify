@@ -25,7 +25,7 @@ from decimal import Decimal, InvalidOperation
 
 from . import crypto
 from .models import Chain, PaymentRequirements, VerificationResult
-from .replay_store import ReplayStore
+from .replay_store import ClaimResult, ReplayStore
 
 
 REVIEW_THRESHOLD_FRACTION = Decimal("0.9")  # spend >= 90% of L1 ceiling -> review
@@ -221,10 +221,22 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
             reasons=["L3: jti must be a non-empty string"],
         )
 
-    if not ctx.replay_store.claim(jti):
+    authorization_id = crypto.hash_payload(chain.l1.payload)
+    claim_result = ctx.replay_store.claim_and_reserve(
+        jti,
+        authorization_id,
+        amount,
+        l1_ceiling,
+    )
+    if claim_result is ClaimResult.REPLAYED:
         return VerificationResult(
             decision="deny",
             reasons=["L3: jti already used (replay)"],
+        )
+    if claim_result is ClaimResult.SPEND_CEILING_EXCEEDED:
+        return VerificationResult(
+            decision="deny",
+            reasons=["Payment: cumulative spend exceeds L1 spendCeiling"],
         )
 
     # --- soft risk signal: spend close to the L1 ceiling gets a second look ---

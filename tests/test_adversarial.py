@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,177 @@ def test_payment_amount_over_per_tx_max_is_denied(keys, ctx):
     result = verify_chain(chain, payment, ctx)
     assert result.decision == "deny", result.reasons
     assert any("perTxMax" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# L1 cumulative spend ceiling
+# ---------------------------------------------------------------------------
+
+def test_l1_spend_ceiling_limits_cumulative_payments(keys, ctx):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="50.00"),
+    )
+
+    def chain_for(invoice_id, amount):
+        payment = PaymentRequirements(invoice_id, "xrpl:mainnet", "RLUSD", amount, "rMerchant")
+        return Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, payment)), payment
+
+    first_chain, first_payment = chain_for("inv-cumulative-1", "50.00")
+    second_chain, second_payment = chain_for("inv-cumulative-2", "50.00")
+    excess_chain, excess_payment = chain_for("inv-cumulative-3", "1.00")
+
+    assert verify_chain(first_chain, first_payment, ctx).decision == "allow"
+    assert verify_chain(second_chain, second_payment, ctx).decision == "allow"
+    excess = verify_chain(excess_chain, excess_payment, ctx)
+    assert excess.decision == "deny"
+    assert excess.reasons == ["Payment: cumulative spend exceeds L1 spendCeiling"]
+
+
+def test_l1_spend_ceiling_exact_boundary_is_allowed(keys, ctx):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="60.00"),
+    )
+    payments = [
+        PaymentRequirements("inv-boundary-1", "xrpl:mainnet", "RLUSD", "60.00", "rMerchant"),
+        PaymentRequirements("inv-boundary-2", "xrpl:mainnet", "RLUSD", "40.00", "rMerchant"),
+    ]
+    chains = [Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, payment)) for payment in payments]
+
+    assert verify_chain(chains[0], payments[0], ctx).decision == "allow"
+    assert verify_chain(chains[1], payments[1], ctx).decision == "allow"
+
+
+def test_payment_exceeding_remaining_l1_budget_is_denied(keys, ctx):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="60.00"),
+    )
+    first_payment = PaymentRequirements("inv-remaining-1", "xrpl:mainnet", "RLUSD", "60.00", "rMerchant")
+    excess_payment = PaymentRequirements("inv-remaining-2", "xrpl:mainnet", "RLUSD", "50.00", "rMerchant")
+    first_chain = Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, first_payment))
+    excess_chain = Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, excess_payment))
+
+    assert verify_chain(first_chain, first_payment, ctx).decision == "allow"
+    excess = verify_chain(excess_chain, excess_payment, ctx)
+    assert excess.decision == "deny"
+    assert excess.reasons == ["Payment: cumulative spend exceeds L1 spendCeiling"]
+
+
+def test_denied_payment_does_not_reserve_l1_budget(keys, ctx):
+    payment = PaymentRequirements("inv-budget", "xrpl:mainnet", "RLUSD", "100.00", "rMerchant")
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="100.00"),
+    )
+    chain = Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, payment))
+    wrong_payment = PaymentRequirements("wrong-invoice", "xrpl:mainnet", "RLUSD", "100.00", "rMerchant")
+
+    assert verify_chain(chain, wrong_payment, ctx).decision == "deny"
+    assert verify_chain(chain, payment, ctx).decision == "review"
+
+
+def test_spend_ceiling_rejection_does_not_consume_l3_jti(keys, ctx):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="100.00"),
+    )
+    first_payment = PaymentRequirements("inv-jti-1", "xrpl:mainnet", "RLUSD", "100.00", "rMerchant")
+    rejected_payment = PaymentRequirements("inv-jti-2", "xrpl:mainnet", "RLUSD", "1.00", "rMerchant")
+    first_chain = Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, first_payment))
+    rejected_chain = Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, rejected_payment))
+
+    assert verify_chain(first_chain, first_payment, ctx).decision == "review"
+    assert verify_chain(rejected_chain, rejected_payment, ctx).decision == "deny"
+    assert ctx.replay_store.claim(rejected_chain.l3.payload["jti"])
+
+
+def test_concurrent_payments_cannot_overspend_l1_ceiling(keys, ctx):
+    l1 = build_l1(
+        keys["trustline"],
+        keys["owner"],
+        L1Terms(["xrpl:mainnet"], ["RLUSD"], spend_ceiling="100.00"),
+    )
+    l2 = build_l2(
+        keys["owner"],
+        keys["agent"],
+        l1,
+        L2Terms(["xrpl:mainnet"], ["RLUSD"], per_tx_max="60.00"),
+    )
+    payments = [
+        PaymentRequirements(f"inv-concurrent-{index}", "xrpl:mainnet", "RLUSD", "60.00", "rMerchant")
+        for index in range(2)
+    ]
+    chains = [Chain(l1=l1, l2=l2, l3=build_l3(keys["agent"], l2, payment)) for payment in payments]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda pair: verify_chain(*pair, ctx), zip(chains, payments)))
+
+    assert sorted(result.decision for result in results) == ["allow", "deny"]
+
+
+def test_separate_l1_credentials_have_independent_spend_budgets(keys, ctx):
+    first_payment = PaymentRequirements("inv-independent-1", "xrpl:mainnet", "RLUSD", "100.00", "rMerchant")
+    second_payment = PaymentRequirements("inv-independent-2", "xrpl:mainnet", "RLUSD", "100.00", "rMerchant")
+    first_chain = build_valid_chain(
+        keys["trustline"], keys["owner"], keys["agent"], first_payment,
+        spend_ceiling="100.00", per_tx_max="100.00",
+    )
+    second_chain = build_valid_chain(
+        keys["trustline"], keys["owner"], keys["agent"], second_payment,
+        spend_ceiling="100.00", per_tx_max="100.00",
+    )
+
+    assert crypto.verify_es256(
+        keys["trustline"].public_key,
+        first_chain.l1.payload,
+        first_chain.l1.signature,
+    )
+    assert crypto.verify_es256(
+        keys["trustline"].public_key,
+        second_chain.l1.payload,
+        second_chain.l1.signature,
+    )
+    assert crypto.hash_payload(first_chain.l1.payload) != crypto.hash_payload(second_chain.l1.payload)
+
+    assert verify_chain(first_chain, first_payment, ctx).decision == "review"
+    assert verify_chain(second_chain, second_payment, ctx).decision == "review"
 
 
 # ---------------------------------------------------------------------------
