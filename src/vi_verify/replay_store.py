@@ -8,16 +8,26 @@ a database or distributed cache keyed by jti with a TTL past L3's `exp`.
 """
 from __future__ import annotations
 
+from threading import Lock
+
 
 class ReplayStore:
     def __init__(self) -> None:
         self._seen: set[str] = set()
+        self._lock = Lock()
 
-    def seen(self, jti: str) -> bool:
-        return jti in self._seen
+    def claim(self, jti: str) -> bool:
+        """Atomically consume `jti`, returning True only for its first claim.
 
-    def record(self, jti: str) -> None:
-        self._seen.add(jti)
+        Production backends should implement the same operation with an atomic
+        conditional insert (for example, Redis SET NX or a unique DB key).
+        """
+        with self._lock:
+            if jti in self._seen:
+                return False
+            self._seen.add(jti)
+            return True
 
     def reset(self) -> None:
-        self._seen.clear()
+        with self._lock:
+            self._seen.clear()

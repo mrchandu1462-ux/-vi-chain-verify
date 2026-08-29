@@ -221,13 +221,11 @@ def verify_chain(chain: Chain, payment: PaymentRequirements, ctx: VerifyContext)
             reasons=["L3: jti must be a non-empty string"],
         )
 
-    if ctx.replay_store.seen(jti):
+    if not ctx.replay_store.claim(jti):
         return VerificationResult(
             decision="deny",
             reasons=["L3: jti already used (replay)"],
         )
-
-    ctx.replay_store.record(jti)
 
     # --- soft risk signal: spend close to the L1 ceiling gets a second look ---
     if amount is not None and l1_ceiling is not None and l1_ceiling > 0:
