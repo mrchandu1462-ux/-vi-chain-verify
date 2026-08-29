@@ -25,6 +25,10 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
 from cryptography.exceptions import InvalidSignature
 
 
+def _is_p256_public_key(key: object) -> bool:
+    return isinstance(key, ec.EllipticCurvePublicKey) and isinstance(key.curve, ec.SECP256R1)
+
+
 def public_key_thumbprint(public_key: ec.EllipticCurvePublicKey) -> str:
     """Return a short, stable identifier for a public key."""
     raw = public_key.public_bytes(
@@ -86,6 +90,8 @@ def sign_es256(private_key: ec.EllipticCurvePrivateKey, payload: dict) -> str:
 def verify_es256(public_key: ec.EllipticCurvePublicKey, payload: dict, signature_b64url: str) -> bool:
     """Verify an ES256 signature over a JSON payload. Never raises on bad input -- returns False."""
     try:
+        if not _is_p256_public_key(public_key):
+            return False
         raw_sig = b64url_decode(signature_b64url)
         if len(raw_sig) != 64:
             return False
@@ -108,5 +114,6 @@ def public_key_to_pem(public_key: ec.EllipticCurvePublicKey) -> str:
 
 def public_key_from_pem(pem: str) -> ec.EllipticCurvePublicKey:
     key = serialization.load_pem_public_key(pem.encode("ascii"))
-    assert isinstance(key, ec.EllipticCurvePublicKey)
+    if not _is_p256_public_key(key):
+        raise ValueError("ES256 public key must use P-256 (secp256r1)")
     return key

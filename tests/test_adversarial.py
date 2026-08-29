@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -998,6 +1000,54 @@ def test_valid_signature_still_verifies_after_boundary_tests(keys, payment, ctx)
         chain.l1.payload,
         chain.l1.signature,
     )
+
+
+@pytest.mark.parametrize("curve", [ec.SECP192R1, ec.SECP224R1, ec.SECP256K1])
+def test_non_p256_public_keys_are_rejected_by_es256_verification(curve):
+    private_key = ec.generate_private_key(curve())
+    payload = {"type": "test"}
+    signature = crypto.sign_es256(private_key, payload)
+
+    assert not crypto.verify_es256(private_key.public_key(), payload, signature)
+
+
+@pytest.mark.parametrize("curve", [ec.SECP192R1, ec.SECP224R1, ec.SECP256K1])
+def test_non_p256_public_keys_are_rejected_when_parsing_pem(curve):
+    public_key = ec.generate_private_key(curve()).public_key()
+    pem = crypto.public_key_to_pem(public_key)
+
+    with pytest.raises(ValueError, match="P-256"):
+        crypto.public_key_from_pem(pem)
+
+
+def test_p256_public_key_still_parses_and_verifies(keys):
+    payload = {"type": "test"}
+    signature = crypto.sign_es256(keys["trustline"].private_key, payload)
+    pem = crypto.public_key_to_pem(keys["trustline"].public_key)
+
+    assert crypto.verify_es256(crypto.public_key_from_pem(pem), payload, signature)
+
+
+def test_non_ec_owner_public_key_fails_closed(keys, payment, ctx):
+    chain = _valid_chain(keys, payment)
+    non_ec_pem = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    ).public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    l1_payload = copy.deepcopy(chain.l1.payload)
+    l1_payload["ownerPubKey"] = non_ec_pem
+    l1 = Credential(
+        payload=l1_payload,
+        signature=_resign(keys["trustline"].private_key, l1_payload),
+    )
+
+    result = verify_chain(Chain(l1=l1, l2=chain.l2, l3=chain.l3), payment, ctx)
+
+    assert result.decision == "deny"
+    assert result.reasons == ["L1: unparseable ownerPubKey"]
 # ---------------------------------------------------------------------------
 # Temporal consistency / issuance-order attacks
 # ---------------------------------------------------------------------------
